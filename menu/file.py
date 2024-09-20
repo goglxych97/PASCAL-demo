@@ -1,9 +1,8 @@
 # menu/file.py
+from utils.segmentation_utils.transform_save_segmentation import save_transform_segmentation
 from PyQt5.QtWidgets import QFileDialog
-from utils.segmentation_utils.convert_matrix_for_save import save_segmentation_nifti
-import nibabel as nib
 
-def load_nifti(main_window):
+def load_image_dialog(main_window):
     options = QFileDialog.Options()
     file_path, _ = QFileDialog.getOpenFileName(
         main_window,
@@ -12,10 +11,9 @@ def load_nifti(main_window):
         "NIfTI Files (*.nii *.nii.gz)",
         options=options
     )
-
     return file_path
 
-def load_segmentation(main_window):
+def load_segmentation_dialog(main_window):
     options = QFileDialog.Options()
     file_path, _ = QFileDialog.getOpenFileName(
         main_window,
@@ -24,13 +22,9 @@ def load_segmentation(main_window):
         "NIfTI Files (*.nii *.nii.gz)",
         options=options
     )
-    if file_path:
-        nifti_img = nib.load(file_path)
-        return nifti_img.get_fdata()
-    
-    return None
+    return file_path
 
-def save_segmentation(main_window, segmentation_matrix, affine, header):
+def save_segmentation_dialog(main_window, segmentation_matrix, affine, header):
     options = QFileDialog.Options()
     file_path, _ = QFileDialog.getSaveFileName(
         main_window,
@@ -40,7 +34,7 @@ def save_segmentation(main_window, segmentation_matrix, affine, header):
         options=options
     )
     if file_path:
-        save_segmentation_nifti(
+        save_transform_segmentation(
             segmentation_matrix,
             affine,
             header,

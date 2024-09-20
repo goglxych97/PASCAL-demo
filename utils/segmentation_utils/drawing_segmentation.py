@@ -33,16 +33,15 @@ def bresenham_line(x0, y0, x1, y1):
     
     return points
 
-def render_segmentation_from_matrix(segmentation_image, segmentation_matrix, current_slice_index):
+def render_segmentation_from_matrix(segmentation_image, slice_segmentation):
     """
     Render the segmentations for faster performance.
     :param segmentation_image: QImage object to draw the segmentation
     :param segmentation_matrix: Numpy array containing segmentation
     :param current_slice_index: Index for current slice to render
     """
-    if segmentation_matrix is not None:
+    if slice_segmentation is not None:
         segmentation_image.fill(Qt.transparent)
-        slice_segmentation = segmentation_matrix[:, :, current_slice_index]
         height, width = slice_segmentation.shape
 
         # Define color mapping using RGBA tuples
