@@ -1,16 +1,14 @@
 # utils/cache_utils/cache_decorators.py
 from functools import wraps
 
+
 def slice_cache(maxsize=100):
-    """
-    Decorator to create a cache for each slice.
-    """
     def decorator(func):
         cache = {}
-        
+
         @wraps(func)
         def wrapper(self, slice_index, *args):
-            key = (slice_index, args)
+            key = (slice_index, args, self.canvas_view)
             if key not in cache:
                 if len(cache) >= maxsize:
                     cache.pop(next(iter(cache)))

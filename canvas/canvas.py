@@ -1,172 +1,301 @@
-from functools import lru_cache
 from utils.cache_utils.cache_decorators import slice_cache
-from utils.image_utils.normalize import return_min_max_value, min_max_normalize 
-from utils.segmentation_utils.drawing_segmentation import update_segmentation_matrix, render_segmentation_from_matrix
+from utils.image_utils.normalize import min_max_normalize
+from utils.segmentation_utils.drawing_segmentation import (
+    update_segmentation_matrix,
+    render_segmentation_from_matrix,
+)
 from PyQt5.QtCore import Qt, QPoint, pyqtSignal
 from PyQt5.QtGui import QColor, QImage, QPainter, QPixmap
 from PyQt5.QtWidgets import QLabel, QSizePolicy, QScrollBar, QHBoxLayout, QWidget
-import numpy as np
+
 
 class Canvas(QWidget):
-    segmentation_updated = pyqtSignal()
-    request_slice = pyqtSignal(int)  # Slice 데이터를 요청할 때 사용
+    segmentation_updated = pyqtSignal(set, str)
+    request_slice = pyqtSignal(int, str)
 
-    def __init__(self):
+    def __init__(self, view):
         super().__init__()
+        self.canvas_view = view
+        self.initialize_parameters()
+        self.create_ui_elements()
+
+    def create_ui_elements(self):
+        """Create and set up UI elements for the canvas."""
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        
-        # Canvas Layout
+
+        # Main label to display images
         self.label = QLabel(self)
         self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.label.setMinimumSize(300, 300)
+
+        # Scroll bar to navigate through slices
         self.scroll_bar = QScrollBar(Qt.Vertical, self)
         self.scroll_bar.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.scroll_bar.setMinimumWidth(15)
         self.scroll_bar.valueChanged.connect(self.scroll_to_slice)
+
+        # Layout configuration
         self.layout = QHBoxLayout(self)
         self.layout.addWidget(self.label)
         self.layout.addWidget(self.scroll_bar)
         self.layout.setContentsMargins(0, 0, 0, 0)
 
-        # Canvas Params
-        self.nifty_shape = None
-        self.background_image = None
-        self.segmentation_image = None
+    def initialize_parameters(self):
+        """Initialize canvas parameters."""
+        self.nifti_shape = None
         self.last_point = QPoint()
         self.drawing = False
         self.current_slice_index = 0
-        self.brush_color = QColor(255, 0, 0, 255)
+        self.brush_color = QColor(255, 0, 0, 255)  # Default to red
         self.brush_size = 8
-        self.brush_color_value = 1
-        self.segmentation_matrix = None
-        self.nifti_slice_data = None  # Nifti slice data 저장
-        self.segmentation_slice_data = None  # Segmentation slice data 저장
+        self.brush_color_value = 1  # Default color value (1 for drawing)
+
+        self.background_array = None
+        self.segmentation_array = None
+        self.background_image = None
+        self.segmentation_image = None
+
+        self.square_length = None
+        self.nifti_min = None
+        self.nifti_max = None
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self.background_image is not None:
-            self.update_slice()
-    
-    def update_slice(self):
-        if self.nifti_slice_data is None or self.segmentation_slice_data is None:
-            # Slice 데이터가 없으면 MainWindow에 요청
-            self.request_slice.emit(self.current_slice_index)
-            return 
-        
+        if self.background_image:
+            self.update_slice_display()
+
+    def update_slice_display(self):
+        """Update the displayed slice images."""
         size_tuple = (self.label.size().width(), self.label.size().height())
-        self.background_image = self.render_cached_image(self.current_slice_index, size_tuple)
-        self.segmentation_image = self.render_cached_segmentation(self.current_slice_index, size_tuple)
-        self.update_display() 
+        self.background_image = self.render_cached_image(
+            self.current_slice_index, size_tuple
+        )
+        self.segmentation_image = self.render_cached_segmentation(
+            self.current_slice_index, size_tuple
+        )
+        self.update_display()
 
     def update_display(self):
-        if self.background_image is None or self.segmentation_image is None:
+        """Combine background and segmentation images and update the label display."""
+        if not (self.background_image and self.segmentation_image):
             return
 
+        combined_image = self.create_combined_image()
+        self.label.setPixmap(QPixmap.fromImage(combined_image))
+
+    def create_combined_image(self):
+        """Create a combined image from background and segmentation."""
         combined_image = QImage(self.label.size(), QImage.Format_ARGB32)
         combined_image.fill(Qt.transparent)
         painter = QPainter(combined_image)
         painter.drawImage(self.label.rect(), self.background_image)
         painter.drawImage(self.label.rect(), self.segmentation_image)
         painter.end()
-        self.label.setPixmap(QPixmap.fromImage(combined_image))
+        return combined_image
 
     def set_slice_data(self, nifti_slice, segmentation_slice):
-        """MainWindow에서 slice 데이터를 설정해주는 함수"""
-        self.nifti_slice_data = nifti_slice
-        self.segmentation_slice_data = segmentation_slice
-        self.update_slice()
+        """Set NIfTI and segmentation data for a specific slice."""
+        if not self.validate_slice_data(nifti_slice, segmentation_slice):
+            return
 
-    def set_background_image_from_nifti(self, nifty_shape):
-        self.nifty_shape = nifty_shape
-        self.current_slice_index = self.nifty_shape[2] // 2
-        self.scroll_bar.setMaximum(self.nifty_shape[2] - 1)
+        self.background_array = nifti_slice
+        self.segmentation_array = segmentation_slice
+        self.update_slice_display()
+
+    def validate_slice_data(self, nifti_slice, segmentation_slice):
+        """Validate the given slice data."""
+        if nifti_slice is None or nifti_slice.size == 0:
+            print(
+                f"Error: Invalid nifti_slice data. Shape: {nifti_slice.shape if nifti_slice is not None else 'None'}"
+            )
+            return False
+        if segmentation_slice is None or segmentation_slice.size == 0:
+            print(
+                f"Error: Invalid segmentation_slice data. Shape: {segmentation_slice.shape if segmentation_slice is not None else 'None'}"
+            )
+            return False
+        return True
+
+    def set_initial_background(
+        self, nifti_array, segment_array, nifti_shape, min_val, max_val
+    ):
+        """Set initial background and segmentation arrays."""
+        self.nifti_shape = nifti_shape
+        self.nifti_min = min_val
+        self.nifti_max = max_val
+
+        self.current_slice_index = self.determine_initial_index()
+        self.square_length = max(nifti_array.shape)
+        self.set_scroll_bar_max()
+        self.set_data_and_update(nifti_array, segment_array)
+
+    def determine_initial_index(self):
+        """Determine the initial slice index based on the canvas view."""
+        if self.canvas_view == "axial":
+            return self.nifti_shape[2] // 2
+        elif self.canvas_view == "coronal":
+            return self.nifti_shape[1] // 2
+        elif self.canvas_view == "sagittal":
+            return self.nifti_shape[0] // 2
+        return 0
+
+    def set_scroll_bar_max(self):
+        """Set the maximum value for the scroll bar based on the canvas view."""
+        if self.canvas_view == "axial":
+            self.scroll_bar.setMaximum(self.nifti_shape[2] - 1)
+        elif self.canvas_view == "coronal":
+            self.scroll_bar.setMaximum(self.nifti_shape[1] - 1)
+        elif self.canvas_view == "sagittal":
+            self.scroll_bar.setMaximum(self.nifti_shape[0] - 1)
+
+    def set_data_and_update(self, nifti_array, segment_array):
+        """Set the data arrays and update the canvas display."""
+        self.background_array = nifti_array
+        self.segmentation_array = segment_array
         self.scroll_bar.setValue(self.current_slice_index)
+        self.update_slice_display()
 
-        self.render_cached_image.cache_clear()
-        self.render_cached_segmentation.cache_clear()
-        self.update_slice()
-
-    @lru_cache(maxsize=100)
+    @slice_cache(maxsize=100)
     def render_cached_image(self, slice_index, size):
-        import matplotlib.pyplot as plt
-        plt.imshow(self.nifti_slice_data)
-        plt.show()
-        
-        slice_image = self.nifti_slice_data  # 요청받아온 데이터 사용
-        min_value, max_value = return_min_max_value(slice_image)
-        slice_image = min_max_normalize(slice_image, min_value, max_value)
-        height, width = slice_image.shape
-        bytes_per_line = width
-        qimage = QImage(slice_image.tobytes(), width, height, bytes_per_line, QImage.Format_Grayscale8)
+        """Render the background image with caching."""
+        if self.background_array is None or len(self.background_array.shape) != 2:
+            return QImage(size[0], size[1], QImage.Format_Grayscale8)
 
-        return qimage.scaled(size[0], size[1], Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        return self.create_qimage_from_array(self.background_array, size)
 
     @slice_cache(maxsize=100)
     def render_cached_segmentation(self, slice_index, size):
-        slice_segmentation = self.segmentation_slice_data  # 요청받아온 데이터 사용
-
+        """Render the segmentation image with caching."""
         segmentation_image = QImage(size[0], size[1], QImage.Format_ARGB32)
         segmentation_image.fill(Qt.transparent)
-
         render_segmentation_from_matrix(
-            segmentation_image,
-            slice_segmentation
+            segmentation_image, self.segmentation_array, self.canvas_view
         )
-
         return segmentation_image
 
+    def create_qimage_from_array(self, array, size):
+        """Create a QImage from a numpy array."""
+        normalized_image = min_max_normalize(array, self.nifti_min, self.nifti_max)
+        height, width = normalized_image.shape
+        bytes_per_line = width
+        qimage = QImage(
+            normalized_image.tobytes(),
+            width,
+            height,
+            bytes_per_line,
+            QImage.Format_Grayscale8,
+        )
+        return qimage.scaled(
+            size[0], size[1], Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+
     def scroll_to_slice(self, value):
-        if self.nifty_shape is not None:
-            max_index = self.nifty_shape[2] - 1
-            self.current_slice_index = min(max(0, value), max_index)
-            self.update_slice()
+        """Handle scrolling to a new slice."""
+        max_index = self.get_max_index_for_view()
+        new_index = min(max(0, value), max_index)
+        if new_index != self.current_slice_index:
+            self.current_slice_index = new_index
+            self.request_slice.emit(self.current_slice_index, self.canvas_view)
+
+    def get_max_index_for_view(self):
+        """Get the maximum index for the current canvas view."""
+        if self.canvas_view == "axial":
+            return self.nifti_shape[2] - 1
+        elif self.canvas_view == "coronal":
+            return self.nifti_shape[1] - 1
+        elif self.canvas_view == "sagittal":
+            return self.nifti_shape[0] - 1
+        return 0
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.last_point = self.translate_mouse_position(event.pos())
             self.drawing = True
-            self.draw_segmentation(event.pos())
+            self.draw_segmentation(event.pos(), draw_mode="draw")  # Left click to draw
+            self.last_point = self.translate_mouse_position(event.pos())
+        elif event.button() == Qt.RightButton:
+            self.last_point = self.translate_mouse_position(event.pos())
+            self.drawing = True
+            self.draw_segmentation(
+                event.pos(), draw_mode="erase"
+            )  # Right click to erase
             self.last_point = self.translate_mouse_position(event.pos())
 
     def mouseMoveEvent(self, event):
         if event.buttons() & Qt.LeftButton and self.drawing:
-            self.draw_segmentation(event.pos())
+            self.draw_segmentation(event.pos(), draw_mode="draw")  # Left click to draw
+            self.last_point = self.translate_mouse_position(event.pos())
+        elif event.buttons() & Qt.RightButton and self.drawing:
+            self.draw_segmentation(
+                event.pos(), draw_mode="erase"
+            )  # Right click to erase
             self.last_point = self.translate_mouse_position(event.pos())
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        if event.button() in [Qt.LeftButton, Qt.RightButton]:
             self.drawing = False
 
     def translate_mouse_position(self, pos):
+        """Translate the mouse position to the image position."""
         if self.background_image is None:
             return pos
-        
+
         x_ratio = self.background_image.width() / self.label.width()
         y_ratio = self.background_image.height() / self.label.height()
-
         return QPoint(int(pos.x() * x_ratio), int(pos.y() * y_ratio))
 
-    def draw_segmentation(self, pos):
+    def draw_segmentation(self, pos, draw_mode="draw"):
+        """Draw or erase segmentation on the image."""
         pos = self.translate_mouse_position(pos)
-        update_segmentation_matrix(
-            self.segmentation_matrix,
+
+        if draw_mode == "erase":
+            current_brush_value = 0  # Erase mode sets the brush value to 0
+        else:
+            current_brush_value = (
+                self.brush_color_value
+            )  # Draw mode uses current brush color
+
+        updated_pos = update_segmentation_matrix(
+            self.segmentation_array,
             self.last_point,
             pos,
             self.brush_size,
             self.background_image,
-            self.current_slice_index,
-            self.brush_color_value
+            current_brush_value,
         )
-        self.render_cached_segmentation.cache_invalidate(self.current_slice_index)
+
+        self.update_and_invalidate_cache(updated_pos)
+
+    def update_and_invalidate_cache(self, pos):
+        """Update the segmentation image and invalidate cache for the current slice."""
         size_tuple = (self.label.size().width(), self.label.size().height())
-        self.segmentation_image = self.render_cached_segmentation(self.current_slice_index, size_tuple)
+        self.render_cached_segmentation.cache_invalidate(self.current_slice_index)
+        self.segmentation_image = self.render_cached_segmentation(
+            self.current_slice_index, size_tuple
+        )
         self.update_display()
-        self.segmentation_updated.emit() 
+        self.segmentation_updated.emit(pos, self.canvas_view)
+
+    def external_update_and_invalidate_cache(self, pos_set):
+        """External update and cache invalidation for the canvas."""
+        size_tuple = (self.label.size().width(), self.label.size().height())
+        for slice_index in pos_set:
+            self.render_cached_segmentation.cache_invalidate(slice_index)
+        self.segmentation_image = self.render_cached_segmentation(
+            self.current_slice_index, size_tuple
+        )
+        self.update_display()
+
+    def clear_cached_segmentation(self):
+        """Clear the segmentation cache for the current slice."""
+        self.render_cached_segmentation.cache_clear()
 
     def wheelEvent(self, event):
-        if self.nifty_shape is not None:
-            delta = event.angleDelta().y() // 120
+        """Handle mouse wheel event to change slice index."""
+        if self.nifti_shape is not None:
+            delta = -event.angleDelta().y() // 120
             new_index = self.current_slice_index + delta
+            new_index = max(0, min(self.get_max_index_for_view(), new_index))
             self.scroll_bar.setValue(new_index)
 
     def set_brush_color(self, color):
@@ -179,6 +308,7 @@ class Canvas(QWidget):
         self.brush_color_value = color_value
 
     def clear_all_segmentations(self):
-        self.render_cached_segmentation.cache_clear()  # Clear cached segmentation
+        """Clear all segmentations on the canvas."""
+        self.clear_cached_segmentation()
         self.segmentation_image.fill(Qt.transparent)
         self.update_display()
